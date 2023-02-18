@@ -1,0 +1,225 @@
+version: '3.7'
+services:
+  zookeeper:
+    image: confluentinc/cp-zookeeper:7.3.0
+    container_name: zookeeper
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+      ZOOKEEPER_TICK_TIME: 2000
+    networks:
+      kafka-net: null
+      
+  broker:
+    image: confluentinc/cp-kafka:7.3.0
+    container_name: broker
+    ports:
+    # To learn about configuring Kafka for access across networks see
+    # https://www.confluent.io/blog/kafka-client-cannot-connect-to-broker-on-aws-on-docker-etc/
+      - "29092:29092"
+    depends_on:
+      - zookeeper
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: 'zookeeper:2181'
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_INTERNAL:PLAINTEXT
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://localhost:9092,PLAINTEXT_INTERNAL://broker:29092
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_CONFLUENT_SCHEMA_REGISTRY_URL: http://schema-registry:8081
+      CONNECT_PLUGIN_PATH: '/usr/share/java,/data/connectors/'
+    networks:
+      kafka-net: null
+    volumes:
+      - ./plugin:/data
+    # links:
+    #  - 'mongo-db:db'
+
+
+  connect:
+    image: confluentinc/cp-kafka-connect
+    ports:
+      - '8083:8083'
+    hostname: connect
+    container_name: connect
+    depends_on:
+      - zookeeper
+      - broker
+    networks:
+      kafka-net: null
+    volumes:
+      - ./plugin:/data
+    environment:
+  #     KAFKA_JMX_PORT: 35000
+  #     KAFKA_JMX_HOSTNAME: localhost
+      CONNECT_BOOTSTRAP_SERVERS: 'broker:29092'
+      CONNECT_REST_ADVERTISED_HOST_NAME: connect
+      CONNECT_REST_PORT: 8083
+      CONNECT_GROUP_ID: connect-cluster-group
+      CONNECT_CONFIG_STORAGE_TOPIC: docker-connect-configs
+      CONNECT_CONFIG_STORAGE_REPLICATION_FACTOR: 1
+      CONNECT_OFFSET_FLUSH_INTERVAL_MS: 10000
+      CONNECT_OFFSET_STORAGE_TOPIC: docker-connect-offsets
+      CONNECT_OFFSET_STORAGE_REPLICATION_FACTOR: 1
+      CONNECT_STATUS_STORAGE_TOPIC: docker-connect-status
+      CONNECT_STATUS_STORAGE_REPLICATION_FACTOR: 1
+      CONNECT_ZOOKEEPER_CONNECT: 'zookeeper:2181'
+      CONNECT_PLUGIN_PATH: '/usr/share/java,/data/connectors/'
+      CONNECT_CONNECTIONS_MAX_IDLE_MS: 180000
+      CONNECT_METADATA_MAX_AGE_MS: 180000
+      CONNECT_AUTO_CREATE_TOPICS_ENABLE: "true"
+      CONNECT_KEY_CONVERTER: org.apache.kafka.connect.json.JsonConverter
+      CONNECT_VALUE_CONVERTER: org.apache.kafka.connect.json.JsonConverter 
+      # CONNECT_KEY_CONVERTER: io.confluent.connect.avro.AvroConverter
+      # CONNECT_VALUE_CONVERTER: io.confluent.connect.avro.AvroConverter 
+      CONNECT_KEY_CONVERTER_SCHEMA_REGISTRY_URL: 'http://schema-registry:8081'
+      CONNECT_VALUE_CONVERTER_SCHEMA_REGISTRY_URL: 'http://schema-registry:8081'
+      CONNECT_PRODUCER_INTERCEPTOR_CLASSES: "io.confluent.monitoring.clients.interceptor.MonitoringProducerInterceptor"
+      CONNECT_CONSUMER_INTERCEPTOR_CLASSES: "io.confluent.monitoring.clients.interceptor.MonitoringConsumerInterceptor"
+    # # links:
+    #   - 'mongo-db:db'
+  # rest-proxy:
+  #   image: confluentinc/cp-kafka-rest:7.2.2
+  #   depends_on:
+  #     - zookeeper
+  #     - broker
+  #     - schema-registry
+  #   hostname: rest-proxy
+  #   container_name: rest-proxy
+  #   networks:
+  #     kafka-net: null
+  #   environment:
+  #     KAFKA_REST_HOST_NAME: rest-proxy
+  #     KAFKA_REST_BOOTSTRAP_SERVERS: "broker:29092"
+  #     KAFKA_REST_LISTENERS: "http://0.0.0.0:8082"
+  #     KAFKA_REST_SCHEMA_REGISTRY_URL: "http://schema_registry:8081"
+
+  schema-registry:
+    image: confluentinc/cp-schema-registry:7.3.0
+    hostname: schema-registry
+    container_name: schema-registry
+    depends_on:
+      - broker
+    networks:
+       kafka-net: null
+    ports:
+      - "8081:8081"
+    environment:
+      SCHEMA_REGISTRY_HOST_NAME: schema-registry
+      SCHEMA_REGISTRY_KAFKASTORE_BOOTSTRAP_SERVERS: 'broker:29092'
+      SCHEMA_REGISTRY_LISTENERS: http://localhost:8081
+
+  pg-db:
+    image: postgres
+    container_name: pg-db
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: pw123
+      PGDATA: /data/postgres
+      PGPORT: 5439
+    volumes:
+      - ./pgdata:/data/postgres
+    ports:
+      - "5439:5439"
+    networks:
+       kafka-net: null
+    restart: always
+    
+  pg-db-adminer:
+    image: adminer
+    container_name: pg-db-adminer
+    restart: always
+    environment:
+      - 'ADMINER_DESIGN=pepa-linha-dark'
+    ports:
+      - 7777:8080
+    links:
+      - 'pg-db:db'
+    networks:
+       kafka-net: null
+
+  control-center:
+    image: confluentinc/cp-enterprise-control-center
+    container_name: control-center
+    depends_on:
+      - broker
+      - connect
+    ports:
+      - "9021:9021"
+    environment:
+      CONTROL_CENTER_BOOTSTRAP_SERVERS: 'broker:29092'
+      CONTROL_CENTER_CONNECT_CONNECT-DEFAULT_CLUSTER: 'connect:8083'
+      CONTROL_CENTER_SCHEMA_REGISTRY_URL: "http://schema-registry:8081"
+      CONTROL_CENTER_REPLICATION_FACTOR: 1
+      CONTROL_CENTER_INTERNAL_TOPICS_PARTITIONS: 1
+      CONTROL_CENTER_MONITORING_INTERCEPTOR_TOPIC_PARTITIONS: 1
+      CONFLUENT_METRICS_TOPIC_REPLICATION: 1
+      CONTROL_CENTER_CONNECT_HEALTHCHECK_ENDPOINT: '/connectors'
+      PORT: 9021
+    networks:
+      kafka-net: null
+
+  ksqldb-server:
+    image: confluentinc/cp-ksqldb-server:7.3.0
+    hostname: ksqldb-server
+    container_name: ksqldb-server
+    ports:
+      - "8088:8088"
+    environment:
+      KSQL_CONFIG_DIR: '/usr/share/java,/data/connectors/'
+      KSQL_BOOTSTRAP_SERVERS: "broker:29092"
+      KSQL_HOST_NAME: ksqldb-server
+      KSQL_LISTENERS: "http://localhost:8088"
+      KSQL_CACHE_MAX_BYTES_BUFFERING: 0
+      KSQL_KSQL_SCHEMA_REGISTRY_URL: "http://schema-registry:8081"
+      KSQL_PRODUCER_INTERCEPTOR_CLASSES: "io.confluent.monitoring.clients.interceptor.MonitoringProducerInterceptor"
+      KSQL_CONSUMER_INTERCEPTOR_CLASSES: "io.confluent.monitoring.clients.interceptor.MonitoringConsumerInterceptor"
+      KSQL_KSQL_CONNECT_URL: "http://connect:8083"
+      KSQL_KSQL_LOGGING_PROCESSING_TOPIC_REPLICATION_FACTOR: 1
+      KSQL_KSQL_LOGGING_PROCESSING_TOPIC_AUTO_CREATE: 'true'
+      KSQL_KSQL_LOGGING_PROCESSING_STREAM_AUTO_CREATE: 'true'
+    depends_on:
+      - zookeeper
+      - broker 
+    networks:
+      kafka-net: null
+  
+  mongo1:
+    image: mongo:5.0.13
+    container_name: mongodb-1
+    restart: always 
+    command: ["--replSet", "rs0", "--bind_ip_all", "--port", "30001"]
+    ports: 
+      - '30001:30001'
+    networks:
+      kafka-net: null
+    links:
+      - mongo2:mongo2
+      - mongo3:mongo3
+    volumes:
+      - ./mongodb/1:/data/db
+  mongo2:
+    image: mongo:5.0.13
+    container_name: mongodb-2
+    restart: always 
+    command: ["--replSet", "rs0", "--bind_ip_all", "--port", "30002"]
+    ports: 
+      - '30002:30002'
+    networks:
+      kafka-net: null
+    volumes:
+      - ./mongodb/2:/data/db  
+  mongo3:
+    image: mongo:5.0.13
+    container_name: mongodb-3
+    command: ["--replSet", "rs0", "--bind_ip_all", "--port", "30003"]
+    restart: always 
+    ports: 
+      - '30003:30003'
+    networks:
+      kafka-net: null
+    volumes:
+      - ./mongodb/3:/data/db
+networks:
+  kafka-net:
+    driver: bridge
